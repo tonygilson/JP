@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Roomwise: faculty</title><link rel="stylesheet" href="style.css"></head>
+<body class="page-faculty">
+<header class="fac-hdr">
+  <div class="fac-hdr-inner">
+    <div class="logo">Roomwise</div>
+    <span class="pill role">Faculty</span>
+    <div class="hdr-clock" id="clock"></div>
+    <div class="hdr-actions">
+      <a class="hdr-link" href="#list">Pending <em id="hdrCount">0</em></a>
+      <div class="menu" id="menu">
+      <button class="user-chip" type="button" id="menuBtn" aria-haspopup="true" aria-expanded="false">
+        <span class="avatar" id="avatar">?</span>
+        <div class="user-block"><span class="name" id="who"></span><span class="meta" id="dept"></span></div>
+        <svg class="chev" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 5 4 4 4-4"/></svg>
+      </button>
+      <div class="menu-pop" role="menu"><button type="button" onclick="refresh()">Refresh requests</button><button type="button" onclick="logout()">Log out</button></div>
+    </div>
+    </div>
+  </div>
+</header>
+
+<main class="fac-main">
+  <section class="fac-banner">
+    <div class="fac-banner-text">
+      <p class="fac-kicker">Faculty workspace</p>
+      <h1 id="greet">Booking requests</h1>
+      <p class="lead">Approve room requests, watch today’s schedule, and see live room occupancy.</p>
+    </div>
+    <div class="fac-banner-deco" aria-hidden="true"></div>
+  </section>
+
+  <div class="fac-stats">
+    <div class="fac-stat fac-stat-pending">
+      <span class="fac-stat-icon">⏳</span>
+      <div><b id="stPending">0</b><span>Need your review</span></div>
+    </div>
+    <div class="fac-stat">
+      <span class="fac-stat-icon">✓</span>
+      <div><b id="stApproved">0</b><span>Approved total</span></div>
+    </div>
+    <div class="fac-stat">
+      <span class="fac-stat-icon">📅</span>
+      <div><b id="stToday">0</b><span>Today’s sessions</span></div>
+    </div>
+    <div class="fac-stat fac-stat-live">
+      <span class="fac-stat-icon live-dot">●</span>
+      <div><b id="stBusy">0</b><span>Rooms in use now</span></div>
+    </div>
+  </div>
+
+  <div class="fac-grid">
+    <section class="fac-inbox">
+      <div class="fac-inbox-head">
+        <div>
+          <h2>Request inbox</h2>
+          <p>Filter by status or search across students and rooms.</p>
+        </div>
+        <button class="btn ghost sm" type="button" onclick="refresh()">Refresh</button>
+      </div>
+
+      <div class="fac-search-wrap">
+        <input class="fac-search" id="q" type="search" placeholder="Search student, room, department, purpose…" autocomplete="off">
+      </div>
+
+      <div class="fac-tabs" id="tabs" role="tablist">
+        <button type="button" data-s="pending" class="on" role="tab">Pending <em id="nPending">0</em></button>
+        <button type="button" data-s="approved" role="tab">Approved <em id="nApproved">0</em></button>
+        <button type="button" data-s="rejected" role="tab">Rejected <em id="nRejected">0</em></button>
+      </div>
+
+      <div class="fac-list" id="list"></div>
+    </section>
+
+    <aside class="fac-side">
+      <div class="fac-side-card fac-schedule">
+        <div class="fac-side-title">
+          <h3>Today’s schedule</h3>
+          <span id="todayLabel"></span>
+        </div>
+        <div class="fac-timeline" id="today"></div>
+      </div>
+      <div class="fac-side-card">
+        <div class="fac-side-title">
+          <h3>Room occupancy</h3>
+          <span class="live-badge"><i></i> Live</span>
+        </div>
+        <div class="fac-rooms" id="rooms"></div>
+      </div>
+      <button class="btn ghost sm fac-danger" type="button" onclick="deleteAccount()">Delete my account</button>
+    </aside>
+  </div>
+</main>
+<div id="toast"></div>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+<script src="app.js"></script>
+<script>
+let me, tab = "pending", cache = [], rooms = [];
+const initials = (name) => String(name || "?").trim().split(/\s+/).map(w => w[0]).filter(Boolean).slice(0, 2).join("").toUpperCase() || "?";
+
+(async () => {
+  me = await guard("faculty");
+  if (!me) return;
+  $("#avatar").textContent = initials(me.full_name);
+  const first = me.full_name.trim().split(/\s+/)[0];
+  $("#greet").textContent = `Hello, ${first}`;
+  refresh();
+  setInterval(refresh, 60000);
+})();
+
+$("#tabs").onclick = (e) => {
+  const btn = e.target.closest("[data-s]");
+  if (!btn) return;
+  tab = btn.dataset.s;
+  document.querySelectorAll("#tabs [data-s]").forEach(b => b.classList.toggle("on", b === btn));
+  paintList();
+};
+$("#q").oninput = () => paintList();
+
+async function refresh() {
+  const nowD = new Date();
+  const dayStart = new Date(nowD.getFullYear(), nowD.getMonth(), nowD.getDate());
+  const dayEnd = new Date(dayStart.getTime() + 864e5);
+  $("#todayLabel").textContent = new Date().toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "short" });
+
+  const [{ data: bookings, error }, { data: roomList }] = await Promise.all([
+    db.from("bookings").select("*, rooms(name, type, capacity), profiles!requested_by(full_name, department)").order("start_time", { ascending: true }),
+    db.from("rooms").select("*").eq("is_active", true).order("name"),
+  ]);
+  if (error) return toast(error.message);
+  cache = bookings || [];
+  rooms = roomList || [];
+
+  const pending = cache.filter(b => b.status === "pending");
+  const approved = cache.filter(b => b.status === "approved");
+  const rejected = cache.filter(b => b.status === "rejected");
+  const todayApproved = approved.filter(b => { const s = new Date(b.start_time); return s >= dayStart && s < dayEnd; });
+  const live = approved.filter(b => new Date(b.start_time) <= nowD && new Date(b.end_time) > nowD);
+
+  $("#stPending").textContent = pending.length;
+  $("#hdrCount").textContent = pending.length;
+  $("#stApproved").textContent = approved.length;
+  $("#stToday").textContent = todayApproved.length;
+  $("#stBusy").textContent = live.length;
+  $("#nPending").textContent = pending.length;
+  $("#nApproved").textContent = approved.length;
+  $("#nRejected").textContent = rejected.length;
+
+  paintList();
+  paintToday(todayApproved);
+  paintRooms(live, todayApproved);
+}
+
+function paintList() {
+  const q = $("#q").value.trim().toLowerCase();
+  let rows = cache.filter(b => b.status === tab);
+  if (q) {
+    rows = rows.filter(b =>
+      [b.purpose, b.rooms?.name, b.profiles?.full_name, b.profiles?.department].some(v => String(v || "").toLowerCase().includes(q))
+    );
+  }
+  if (tab === "rejected") rows = [...rows].reverse();
+
+  $("#list").innerHTML = rows.length ? rows.map(b => {
+    const student = b.profiles?.full_name || "Student";
+    const dept = b.profiles?.department;
+    return `
+    <article class="req-card status-${b.status}">
+      <header class="req-head">
+        <div class="req-room">
+          <span class="req-room-name">${esc(b.rooms?.name || "Room")}</span>
+          ${b.rooms?.type ? `<span class="req-type">${esc(b.rooms.type)} · ${b.rooms.capacity} seats</span>` : ""}
+        </div>
+        <span class="tag ${b.status}">${statusLabel(b.status)}</span>
+      </header>
+      <p class="req-purpose">${esc(b.purpose)}</p>
+      <div class="req-student">
+        <span class="avatar sm">${esc(initials(student))}</span>
+        <div>
+          <strong>${esc(student)}</strong>
+          ${dept ? `<span>${esc(dept)}</span>` : ""}
+        </div>
+      </div>
+      <div class="req-when">
+        <span>${fmt(b.start_time)}</span>
+        <span class="req-arrow">→</span>
+        <span>${fmtEnd(b.end_time)}</span>
+        <span class="req-dur">${fmtDuration(b.start_time, b.end_time)}</span>
+      </div>
+      ${b.reason ? `<p class="req-note"><b>Note:</b> ${esc(b.reason)}</p>` : ""}
+      ${tab === "pending" ? `
+      <footer class="req-foot">
+        <input id="why${b.id}" placeholder="Optional message to the student">
+        <div class="req-btns">
+          <button class="btn sm" type="button" onclick="decide('${b.id}','approved')">Approve</button>
+          <button class="btn bad sm" type="button" onclick="decide('${b.id}','rejected')">Reject</button>
+        </div>
+      </footer>` : ""}
+    </article>`;
+  }).join("")
+    : `<div class="fac-empty">
+        <div class="fac-empty-icon">${q ? "🔍" : tab === "pending" ? "✨" : "📭"}</div>
+        <p>${q ? "No requests match your search." : tab === "pending" ? "You’re all caught up — no pending requests." : "Nothing in this tab yet."}</p>
+      </div>`;
+}
+
+function paintToday(list) {
+  const sorted = [...list].sort((a, b) => a.start_time.localeCompare(b.start_time));
+  $("#today").innerHTML = sorted.length ? sorted.map(b => `
+    <div class="fac-slot">
+      <div class="fac-slot-time">${fmtEnd(b.start_time)}<small>${fmtEnd(b.end_time)}</small></div>
+      <div class="fac-slot-line"></div>
+      <div class="fac-slot-body">
+        <b>${esc(b.rooms?.name)}</b>
+        <span>${esc(b.purpose)}</span>
+        <small>${esc(b.profiles?.full_name || "")}</small>
+      </div>
+    </div>`).join("")
+    : `<div class="fac-empty compact"><p>No approved sessions scheduled for today.</p></div>`;
+}
+
+function paintRooms(live, today = []) {
+  const upcoming = today.filter(b => new Date(b.start_time) > new Date()).sort((a, b) => a.start_time.localeCompare(b.start_time));
+  const busyIds = new Set(live.map(b => b.room_id));
+  $("#rooms").innerHTML = rooms.length ? rooms.map(r => {
+    const busy = busyIds.has(r.id);
+    const booking = live.find(b => b.room_id === r.id);
+    const next = !busy && upcoming.find(b => b.room_id === r.id);
+    return `
+    <div class="fac-room-row ${busy ? "busy" : next ? "soon" : "free"}">
+      <span class="fac-room-dot"></span>
+      <div class="fac-room-info">
+        <b>${esc(r.name)}</b>
+        <small>${busy && booking ? `Until ${fmtEnd(booking.end_time)}` : next ? `Booked ${fmtEnd(next.start_time)} – ${fmtEnd(next.end_time)}` : "Available"}</small>
+      </div>
+      <span class="fac-room-state">${busy ? "Busy" : next ? "Booked" : "Free"}</span>
+    </div>`;
+  }).join("") : `<div class="fac-empty compact"><p>No rooms configured.</p></div>`;
+}
+
+async function decide(id, status) {
+  const reason = $("#why" + id)?.value.trim() || null;
+  const { error } = await db.from("bookings").update({ status, reason, reviewed_by: me.id }).eq("id", id);
+  if (error) return toast(error.code === "23P01" ? "That room is already approved for an overlapping time. Reject this request or ask for another slot." : error.message);
+  toast(status === "approved" ? "Booking approved" : "Booking rejected");
+  refresh();
+}
+</script></body></html>

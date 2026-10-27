@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Roomwise: log in or sign up</title><link rel="stylesheet" href="style.css"></head>
+<body>
+<div class="auth">
+  <section class="hero">
+    <div class="logo">Roomwise</div>
+    <div>
+      <h1>Find a free room in seconds.</h1>
+      <p>Students search vacant labs and classrooms and send a request. Faculty approve it. No registers, no double bookings.</p>
+    </div>
+    <div class="slots" aria-hidden="true"><i class="on"></i><i class="mid"></i><i></i><i class="mid"></i><i></i><i class="on"></i><i></i><i class="mid"></i><i class="mid"></i><i></i><i class="on"></i><i></i></div>
+  </section>
+  <section class="panel"><div class="box">
+    <h2 id="title">Welcome back</h2><p class="sub" id="sub">Log in to book or approve rooms.</p>
+    <div class="seg" id="seg"><button type="button" data-r="student" class="on">Student</button><button type="button" data-r="faculty">Faculty</button></div>
+    <p class="sub hide" id="roleHint">Choose student or faculty — that sets your account type.</p>
+    <form id="form" novalidate>
+      <div id="signupOnly" class="hide">
+        <label for="name">Full name</label><input id="name" autocomplete="name">
+        <label for="dept">Department</label><input id="dept" placeholder="Computer Science">
+      </div>
+      <label for="email">Email</label><input id="email" type="email" autocomplete="email">
+      <label for="pw">Password</label><input id="pw" type="password" minlength="6" autocomplete="current-password">
+      <button class="btn wide" id="go">Log in</button>
+      <div class="msg" id="msg" role="alert"></div>
+    </form>
+    <p class="swap" id="swap">New here? <a id="flip">Create an account</a></p>
+  </div></section>
+</div>
+<div id="toast"></div>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+<script src="app.js"></script>
+<script>
+let mode = "login", role = "student";
+const show = (el, on) => $(el).classList.toggle("hide", !on);
+function paint() {
+  const su = mode === "signup";
+  $("#title").textContent = su ? "Create your account" : "Welcome back";
+  $("#sub").textContent = su ? "Pick student or faculty, then fill in your details." : "Log in — we open the student or faculty app for your account.";
+  $("#go").textContent = su ? "Sign up" : "Log in";
+  $("#swap").innerHTML = su ? 'Already registered? <a id="flip">Log in</a>' : 'New here? <a id="flip">Create an account</a>';
+  show("#seg", su); show("#roleHint", su); show("#signupOnly", su);
+  $("#msg").textContent = ""; $("#msg").className = "msg";
+  $("#flip").onclick = () => { mode = su ? "login" : "signup"; paint(); };
+  document.querySelectorAll("#seg button").forEach(b => b.classList.toggle("on", b.dataset.r === role));
+}
+$("#seg").onclick = (e) => { if (e.target.dataset.r) { role = e.target.dataset.r; paint(); } };
+async function go() {
+  const p = await getProfile();
+  if (p) location.href = homeForRole(p.role);
+}
+$("#form").onsubmit = async (e) => {
+  e.preventDefault();
+  const msg = $("#msg"), email = $("#email").value.trim(), password = $("#pw").value;
+  msg.className = "msg"; msg.textContent = "";
+  if (!email || password.length < 6) { msg.textContent = "Enter your email and a password of at least 6 characters."; return; }
+  $("#go").disabled = true;
+  if (mode === "login") {
+    const { error } = await db.auth.signInWithPassword({ email, password });
+    if (error) msg.textContent = authErrorMessage(error); else await go();
+  } else {
+    if (!$("#name").value.trim()) { msg.textContent = "Enter your full name."; $("#go").disabled = false; return; }
+    const { data, error } = await db.auth.signUp({ email, password, options: { data: {
+      full_name: $("#name").value.trim(), department: $("#dept").value.trim(), role } } });
+    if (error) msg.textContent = authErrorMessage(error);
+    else if (data.session) await go();
+    else { msg.className = "msg ok"; msg.textContent = "Account created. Check your email to confirm, then log in."; }
+  }
+  $("#go").disabled = false;
+};
+paint(); go();
+</script></body></html>

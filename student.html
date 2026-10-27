@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Roomwise: student</title><link rel="stylesheet" href="style.css"></head>
+<body>
+<header class="app-hdr">
+  <div class="logo">Roomwise</div>
+  <span class="pill role">Student</span>
+  <div class="hdr-clock" id="clock"></div>
+  <div class="hdr-actions">
+    <a class="hdr-link" href="#mine">My requests <em id="hdrCount">0</em></a>
+    <div class="menu" id="menu">
+      <button class="user-chip" type="button" id="menuBtn" aria-haspopup="true" aria-expanded="false">
+        <span class="avatar" id="avatar">?</span>
+        <div class="user-block"><span class="name" id="who"></span><span class="meta" id="dept"></span></div>
+        <svg class="chev" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 5 4 4 4-4"/></svg>
+      </button>
+      <div class="menu-pop" role="menu"><button type="button" onclick="logout()">Log out</button><button type="button" class="danger" onclick="deleteAccount()">Delete account</button></div>
+    </div>
+  </div>
+</header>
+<main>
+  <section class="stu-banner">
+    <div>
+      <p class="stu-kicker" id="hello">Welcome</p>
+      <h1>Find a free room</h1>
+      <p class="lead">Search vacant labs and classrooms, send a request, and track faculty decisions in one place.</p>
+    </div>
+    <div class="stu-art" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+  </section>
+
+  <div class="stats" id="stats">
+    <div class="stat accent"><b id="stPending">—</b><span>Pending</span></div>
+    <div class="stat"><b id="stApproved">—</b><span>Approved</span></div>
+    <div class="stat"><b id="stRejected">—</b><span>Rejected</span></div>
+    <div class="stat"><b id="stTotal">—</b><span>Total requests</span></div>
+  </div>
+
+  <form class="card form" id="search">
+    <div class="form-head" style="grid-column:1/-1">
+      <h2>Search availability</h2>
+      <p>Choose date and time — only rooms with no approved booking in that slot appear.</p>
+    </div>
+    <div class="quick" style="grid-column:1/-1"><span>Quick length</span>
+      <button type="button" data-h="1">1 hour</button><button type="button" data-h="2">2 hours</button><button type="button" data-h="3">3 hours</button>
+    </div>
+    <div><label for="d">Date</label><input id="d" type="date" required></div>
+    <div><label for="s">From</label><input id="s" type="time" value="09:00" required></div>
+    <div><label for="e">To</label><input id="e" type="time" value="11:00" required></div>
+    <div><label for="c">Min. seats</label><input id="c" type="number" min="1" placeholder="Any"></div>
+    <div><label for="t">Room type</label><select id="t"><option value="">All types</option><option>Lab</option><option>Classroom</option><option>Seminar hall</option></select></div>
+    <button class="btn" type="submit">Find rooms</button>
+  </form>
+
+  <h2 class="sec">Available rooms <span class="sec-note" id="resultHint"></span></h2>
+  <div class="rooms" id="results">
+    <div class="card empty" style="grid-column:1/-1">Run a search to see vacant rooms for your slot.</div>
+  </div>
+
+  <h2 class="sec">My requests</h2>
+  <div class="tabs" id="mineTabs">
+    <button data-f="all" class="on">All</button>
+    <button data-f="pending">Pending</button>
+    <button data-f="approved">Approved</button>
+    <button data-f="rejected">Rejected</button>
+  </div>
+  <div class="list" id="mine"></div>
+</main>
+<div id="toast"></div>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+<script src="app.js"></script>
+<script>
+let me, win = {}, mine = [], mineFilter = "all";
+const icon = { Lab: "🖥️", Classroom: "📚", "Seminar hall": "🎤" };
+function countTo(sel, n) {
+  const el = $(sel), from = +el.textContent || 0, t0 = performance.now();
+  (function step(t) {
+    const k = Math.min((t - t0) / 600, 1);
+    el.textContent = Math.round(from + (n - from) * (1 - Math.pow(1 - k, 3)));
+    if (k < 1) requestAnimationFrame(step);
+  })(t0);
+}
+document.querySelector(".quick").onclick = (e) => {
+  const h = +e.target.dataset.h; if (!h) return;
+  const [hh, mm] = $("#s").value.split(":").map(Number);
+  const t = new Date(0, 0, 0, hh + h, mm);
+  $("#e").value = String(t.getHours()).padStart(2, "0") + ":" + String(t.getMinutes()).padStart(2, "0");
+};
+
+(async () => {
+  me = await guard("student");
+  if (!me) return;
+  $("#avatar").textContent = me.full_name.trim().split(/\s+/).map(w => w[0]).slice(0, 2).join("").toUpperCase() || "?";
+  const hr = new Date().getHours();
+  $("#hello").textContent = `${hr < 12 ? "Good morning" : hr < 17 ? "Good afternoon" : "Good evening"}, ${me.full_name.trim().split(/\s+/)[0]}`;
+  $("#d").value = new Date().toISOString().slice(0, 10);
+  $("#d").min = $("#d").value;
+  await loadMine();
+})();
+
+$("#mineTabs").onclick = (e) => {
+  const btn = e.target.closest("[data-f]");
+  if (!btn) return;
+  mineFilter = btn.dataset.f;
+  document.querySelectorAll("#mineTabs [data-f]").forEach(b => b.classList.toggle("on", b === btn));
+  paintMine();
+};
+
+$("#search").onsubmit = async (e) => {
+  e.preventDefault();
+  const start = new Date($("#d").value + "T" + $("#s").value);
+  const end = new Date($("#d").value + "T" + $("#e").value);
+  if (end <= start) return toast("The end time must be after the start time.");
+  win = { start: start.toISOString(), end: end.toISOString() };
+  $("#results").innerHTML = '<div class="card sk"></div>'.repeat(3);
+  const { data, error } = await db.rpc("available_rooms", {
+    p_start: win.start, p_end: win.end, p_min_cap: +$("#c").value || 0, p_type: $("#t").value || null,
+  });
+  if (error) return toast(error.message);
+  $("#resultHint").textContent = data?.length ? `${data.length} room${data.length === 1 ? "" : "s"} free` : "";
+  $("#results").innerHTML = data.length ? data.map(r => `
+    <article class="card room">
+      <div class="room-top">
+        <span class="room-ico">${icon[r.type] || "🏫"}</span>
+        <div><h3>${esc(r.name)}</h3><span class="meta">${esc(r.type)}</span></div>
+        <span class="free-badge">Free</span>
+      </div>
+      <div class="chips">
+        <span class="chip">👥 ${r.capacity} seats</span>
+        ${(r.equipment || []).map(x => `<span class="chip teal">${esc(x)}</span>`).join("")}
+      </div>
+      <input id="p${r.id}" placeholder="Purpose, e.g. DBMS project meeting" maxlength="80">
+      <button class="btn" type="button" onclick="request('${r.id}')">Request this room</button>
+    </article>`).join("")
+    : `<div class="card empty" style="grid-column:1/-1">No vacant rooms for that time. Try a different slot, room type, or fewer seats.</div>`;
+};
+
+async function request(id) {
+  const purpose = $("#p" + id).value.trim();
+  if (!purpose) return toast("Add a purpose so faculty know what the room is for.");
+  const { error } = await db.from("bookings").insert({
+    room_id: id, requested_by: me.id, start_time: win.start, end_time: win.end, purpose,
+  });
+  if (error) return toast(error.message);
+  toast("Request sent to faculty");
+  $("#search").requestSubmit();
+  await loadMine();
+}
+
+async function loadMine() {
+  const { data, error } = await db.from("bookings").select("*, rooms(name, type)").eq("requested_by", me.id).order("start_time", { ascending: false });
+  if (error) return toast(error.message);
+  mine = data || [];
+  const p = mine.filter(b => b.status === "pending").length;
+  const a = mine.filter(b => b.status === "approved").length;
+  const r = mine.filter(b => b.status === "rejected").length;
+  countTo("#stPending", p); $("#hdrCount").textContent = p; countTo("#stApproved", a); countTo("#stRejected", r); countTo("#stTotal", mine.length);
+  paintMine();
+}
+
+function paintMine() {
+  let rows = mine;
+  if (mineFilter !== "all") rows = rows.filter(b => b.status === mineFilter);
+  $("#mine").innerHTML = rows.length ? rows.map(b => `
+    <article class="card booking ${b.status}">
+      <div class="datebox"><b>${new Date(b.start_time).getDate()}</b><span>${new Date(b.start_time).toLocaleString("en-IN", { month: "short" })}</span></div>
+      <div class="grow">
+        <div class="title">${esc(b.rooms?.name || "Room")}</div>
+        <div class="purpose">${esc(b.purpose)}</div>
+        <small>
+          ${fmt(b.start_time)} → ${fmtEnd(b.end_time)} · ${fmtDuration(b.start_time, b.end_time)}
+          ${b.rooms?.type ? `<br><span class="chip teal">${esc(b.rooms.type)}</span>` : ""}
+          ${b.reason ? `<br>Faculty note: ${esc(b.reason)}` : ""}
+        </small>
+      </div>
+      <div class="actions">
+        <span class="tag ${b.status}">${statusLabel(b.status)}</span>
+        ${b.status === "pending" ? `<button class="btn bad sm" type="button" onclick="cancelReq('${b.id}')">Cancel</button>` : ""}
+      </div>
+    </article>`).join("")
+    : `<div class="card empty">${mineFilter === "all" ? "No requests yet. Search above to book your first room." : "No " + mineFilter + " requests."}</div>`;
+}
+
+async function cancelReq(id) {
+  const { error } = await db.from("bookings").delete().eq("id", id);
+  if (error) return toast(error.message);
+  toast("Request cancelled");
+  await loadMine();
+}
+</script></body></html>
